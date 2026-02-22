@@ -176,4 +176,16 @@ public final class SistemaCarbono {
                 .findFirst()
                 .orElse(null);
     }
+
+    public List<Proprietario> listarProprietarios() {
+        return proprietarios.values().stream()
+                .sorted(Comparator.comparing(Proprietario::getNome))
+                .toList();
+    }
+
+    public List<LoteCreditoCarbono> listarLotes() {
+        return lotes.values().stream()
+                .sorted(Comparator.comparing(LoteCreditoCarbono::getCodigoLote))
+                .toList();
+    }
 }

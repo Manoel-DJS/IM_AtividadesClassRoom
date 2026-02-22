@@ -17,8 +17,11 @@ public class Main {
     public static void main(String[] args) {
         SistemaCarbono sistema = new SistemaCarbono();
         Scanner sc = new Scanner(System.in);
+        System.out.println("==============================================");
+        System.out.println(" SISTEMA DE CRÉDITOS DE CARBONO - DEMONSTRAÇÃO ");
+        System.out.println("==============================================");
 
-        // Proprietários (PF e PJ)
+        // ===== Cadastro de proprietários =====
         Proprietario pf = new PessoaFisica("João da Silva", "123.456.789-00");
         Proprietario pj = new PessoaJuridica("Empresa Verde S.A.", "12.345.678/0001-99");
         Proprietario pf2 = new PessoaFisica("Maria Oliveira", "987.654.321-00");
@@ -29,36 +32,74 @@ public class Main {
         sistema.cadastrarProprietario(pf2);
         sistema.cadastrarProprietario(pf3);
 
-        // Lote (sempre 1000 créditos)
+        // ===== Criação do lote =====
         LoteCreditoCarbono lote = sistema.criarLote("LOTE-OLIMPIADAS-0001");
 
-        // Árvores (rastreabilidade com geolocalização)
         sistema.registrarArvore(lote.getId(), new ArvoreGeradoraCredito("Ipê Amarelo", -10.916200, -37.668300));
         sistema.registrarArvore(lote.getId(), new ArvoreGeradoraCredito("Aroeira", -10.916210, -37.668310));
         sistema.registrarArvore(lote.getId(), new ArvoreGeradoraCredito("Pau Brasil", -10.916220, -37.668320));
 
-        // Primeiro proprietário (produção/entrada no sistema)
-        // Copropriedade simultânea (participação por quantidade): soma precisa ser 1000
+        // ==========================================================
+        // EXEMPLO 1 - Copropriedade válida (600 + 400 = 1000)
+        // ==========================================================
+        System.out.println("\nEXEMPLO 1 - Copropriedade válida");
+
         Map<UUID, Integer> iniciais = new LinkedHashMap<>();
         iniciais.put(pf.getId(), 600);
         iniciais.put(pj.getId(), 400);
+
         sistema.definirParticipacoesIniciais(lote.getId(), iniciais);
-
-        // Vendas (histórico). Máximo 3 proprietários no histórico.
-        sistema.venderLote(lote.getId(), List.of(pf.getId(), pj.getId()), pf2.getId(), new BigDecimal("1500.00"));
-
-        // Tentativa de 3ª venda (viraria 4º dono) -> deve falhar
-        try {
-            // agora o proprietário atual é apenas pf2 (1000), então tentar vender com vendedores errados falha
-            sistema.venderLote(lote.getId(), List.of(pf3.getId()), pf.getId(), new BigDecimal("1800.00"));
-        } catch (RegraNegocioException ex) {
-            System.out.println("\n[ERRO ESPERADO] " + ex.getMessage());
-        }
-
-        // Relatório no console
-        System.out.println("\n==================== RELATÓRIO DO LOTE ====================");
         sistema.imprimirRelatorioLote(lote.getId());
 
+        // ==========================================================
+        // EXEMPLO 2 - Erro: soma diferente de 1000
+        // ==========================================================
+        System.out.println("\nEXEMPLO 2 - Tentando definir copropriedade inválida (soma != 1000)");
+
+        LoteCreditoCarbono lote2 = sistema.criarLote("LOTE-ERRO-001");
+
+        try {
+            Map<UUID, Integer> erro = new LinkedHashMap<>();
+            erro.put(pf.getId(), 500);
+            erro.put(pj.getId(), 200); // soma 700
+
+            sistema.definirParticipacoesIniciais(lote2.getId(), erro);
+        } catch (RegraNegocioException ex) {
+            System.out.println("[ERRO ESPERADO] " + ex.getMessage());
+        }
+
+        // ==========================================================
+        // EXEMPLO 3 - Venda correta e tentativa inválida
+        // ==========================================================
+        System.out.println("\nEXEMPLO 3 - Venda do lote");
+
+        // Venda correta (ambos proprietários atuais vendem para pf2)
+        sistema.venderLote(
+                lote.getId(),
+                List.of(pf.getId(), pj.getId()),
+                pf2.getId(),
+                new BigDecimal("1500.00")
+        );
+
+        System.out.println("\nApós venda correta:");
+        sistema.imprimirRelatorioLote(lote.getId());
+
+        // Tentativa inválida: vendedor errado
+        try {
+            System.out.println("\nTentando vender com vendedor incorreto:");
+            sistema.venderLote(
+                    lote.getId(),
+                    List.of(pf3.getId()), // pf3 não é proprietário atual
+                    pf.getId(),
+                    new BigDecimal("1800.00")
+            );
+        } catch (RegraNegocioException ex) {
+            System.out.println("[ERRO ESPERADO] " + ex.getMessage());
+        }
+
+        System.out.println("\n==============================================");
+        System.out.println(" FIM DA DEMONSTRAÇÃO ");
+        System.out.println("==============================================");
 
         System.out.println("==============================================");
         System.out.println("  Sistema de Créditos de Carbono (Console)    ");

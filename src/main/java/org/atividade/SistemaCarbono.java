@@ -7,12 +7,14 @@ import org.atividade.utilities.StatusLote;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public final class SistemaCarbono {
     private final Map<UUID, Proprietario> proprietarios = new HashMap<>();
     private final Map<UUID, LoteCreditoCarbono> lotes = new HashMap<>();
     private final Map<UUID, List<ArvoreGeradoraCredito>> arvoresPorLote = new HashMap<>();
-    private final Map<UUID, List<PropriedadeLote>> propriedadesPorLote = new HashMap<>();
+    // Copropriedade simultânea (até 3). Histórico via dataFim.
+    private final Map<UUID, List<ParticipacaoLote>> participacoesPorLote = new HashMap<>();
     private final Map<UUID, List<TransacaoCompraVenda>> transacoesPorLote = new HashMap<>();
 
     public void cadastrarProprietario(Proprietario p) {
@@ -40,7 +42,7 @@ public final class SistemaCarbono {
         lotes.put(lote.getId(), lote);
 
         arvoresPorLote.put(lote.getId(), new ArrayList<>());
-        propriedadesPorLote.put(lote.getId(), new ArrayList<>());
+        participacoesPorLote.put(lote.getId(), new ArrayList<>());
         transacoesPorLote.put(lote.getId(), new ArrayList<>());
 
         return lote;
@@ -57,56 +59,108 @@ public final class SistemaCarbono {
         arvoresPorLote.get(idLote).add(arvore);
     }
 
-    public void definirPrimeiroProprietario(UUID idLote, Proprietario proprietario) {
+    /**
+     * Define os proprietários atuais do lote (copropriedade simultânea).
+     * Regras:
+     * - 1 a 3 proprietários
+     * - soma das quantidades = 1000
+     * - não permite duplicar proprietário
+     * - só pode ser feito se não houver participações atuais ainda
+     */
+    public void definirParticipacoesIniciais(UUID idLote, Map<UUID, Integer> proprietarioParaCreditos) {
         getLoteOrThrow(idLote);
-        getProprietarioOrThrow(proprietario.getId());
 
-        List<PropriedadeLote> props = propriedadesPorLote.get(idLote);
-        if (!props.isEmpty()) {
-            throw new RegraNegocioException("Lote já possui histórico de proprietários.");
+        if (proprietarioParaCreditos == null || proprietarioParaCreditos.isEmpty()) {
+            throw new RegraNegocioException("Informe 1 a 3 proprietários.");
+        }
+        if (proprietarioParaCreditos.size() > 3) {
+            throw new RegraNegocioException("No máximo 3 proprietários simultâneos.");
+        }
+        if (!getParticipacoesAtuais(idLote).isEmpty()) {
+            throw new RegraNegocioException("O lote já possui proprietários atuais definidos.");
         }
 
-        props.add(new PropriedadeLote(idLote, proprietario.getId(), 1, LocalDateTime.now()));
+        int soma = 0;
+        for (Map.Entry<UUID, Integer> e : proprietarioParaCreditos.entrySet()) {
+            UUID idProp = e.getKey();
+            Integer qtd = e.getValue();
+
+            getProprietarioOrThrow(idProp);
+            if (qtd == null || qtd <= 0) {
+                throw new RegraNegocioException("Quantidade de créditos deve ser > 0.");
+            }
+            soma += qtd;
+        }
+
+        if (soma != 1000) {
+            throw new RegraNegocioException("A soma das participações deve ser exatamente 1000. Soma atual = " + soma);
+        }
+
+        LocalDateTime agora = LocalDateTime.now();
+        List<ParticipacaoLote> lista = participacoesPorLote.get(idLote);
+        for (Map.Entry<UUID, Integer> e : proprietarioParaCreditos.entrySet()) {
+            lista.add(new ParticipacaoLote(idLote, e.getKey(), e.getValue(), agora));
+        }
     }
 
-    public void venderLote(UUID idLote, Proprietario vendedor, Proprietario comprador, BigDecimal valor) {
+    /**
+     * Venda do lote inteiro (1000 créditos).
+     * Regras:
+     * - vendedores informados devem ser exatamente os proprietários atuais (1..3)
+     * - comprador não pode ser um dos vendedores
+     * - após venda: encerra participações atuais e cria 1 participação nova (comprador = 1000)
+     */
+    public void venderLote(UUID idLote, List<UUID> idsVendedores, UUID idComprador, BigDecimal valor) {
         LoteCreditoCarbono lote = getLoteOrThrow(idLote);
-        getProprietarioOrThrow(vendedor.getId());
-        getProprietarioOrThrow(comprador.getId());
 
         if (lote.getStatus() != StatusLote.DISPONIVEL) {
             throw new RegraNegocioException("Lote não está disponível para venda (status=" + lote.getStatus() + ").");
         }
 
-        PropriedadeLote atual = getPropriedadeAtual(idLote);
-        if (atual == null) {
-            throw new RegraNegocioException("Lote ainda não tem proprietário inicial definido.");
+        if (idsVendedores == null || idsVendedores.isEmpty()) {
+            throw new RegraNegocioException("Informe ao menos 1 vendedor.");
+        }
+        if (idsVendedores.size() > 3) {
+            throw new RegraNegocioException("No máximo 3 vendedores.");
         }
 
-        if (!atual.getIdProprietario().equals(vendedor.getId())) {
-            throw new RegraNegocioException("O vendedor não é o proprietário atual do lote.");
+        getProprietarioOrThrow(idComprador);
+        for (UUID v : idsVendedores) getProprietarioOrThrow(v);
+
+        List<ParticipacaoLote> atuais = getParticipacoesAtuais(idLote);
+        if (atuais.isEmpty()) {
+            throw new RegraNegocioException("O lote não possui proprietários atuais definidos.");
+        }
+        if (atuais.size() > 3) {
+            throw new RegraNegocioException("Estado inválido: mais de 3 proprietários atuais.");
         }
 
-        // Regra: máximo 3 proprietários no histórico do lote
-        int ordemAtual = atual.getOrdemProprietario();
-        if (ordemAtual >= 3) {
-            throw new RegraNegocioException("Este lote já atingiu o limite de 3 proprietários no histórico.");
+        int somaAtual = atuais.stream().mapToInt(ParticipacaoLote::getQuantidadeCreditos).sum();
+        if (somaAtual != 1000) {
+            throw new RegraNegocioException("Estado inválido: soma atual das participações != 1000 (soma=" + somaAtual + ")");
+        }
+
+        Set<UUID> setAtuais = atuais.stream().map(ParticipacaoLote::getIdProprietario).collect(Collectors.toSet());
+        Set<UUID> setInformados = new HashSet<>(idsVendedores);
+
+        if (!setAtuais.equals(setInformados)) {
+            throw new RegraNegocioException("Para vender, os vendedores informados devem ser exatamente os proprietários atuais do lote.");
+        }
+        if (setInformados.contains(idComprador)) {
+            throw new RegraNegocioException("O comprador não pode ser um dos proprietários atuais (vendedores).");
         }
 
         LocalDateTime agora = LocalDateTime.now();
 
-        // registra transação
         transacoesPorLote.get(idLote).add(new TransacaoCompraVenda(
-                idLote, vendedor.getId(), comprador.getId(), valor, agora
+                idLote, new ArrayList<>(setInformados), idComprador, valor, agora
         ));
 
-        // encerra propriedade atual
-        atual.encerrar(agora);
+        for (ParticipacaoLote p : atuais) {
+            p.encerrar(agora);
+        }
 
-        // cria nova propriedade (próxima ordem)
-        propriedadesPorLote.get(idLote).add(new PropriedadeLote(
-                idLote, comprador.getId(), ordemAtual + 1, agora
-        ));
+        participacoesPorLote.get(idLote).add(new ParticipacaoLote(idLote, idComprador, 1000, agora));
     }
 
     public void imprimirRelatorioLote(UUID idLote) {
@@ -126,20 +180,35 @@ public final class SistemaCarbono {
             }
         }
 
-        System.out.println("\n--- Histórico de proprietários (máx 3) ---");
-        List<PropriedadeLote> props = propriedadesPorLote.get(idLote);
-        if (props.isEmpty()) {
-            System.out.println("(sem proprietário)");
+        System.out.println("\n--- Proprietários atuais (copropriedade) ---");
+        List<ParticipacaoLote> atuais = getParticipacoesAtuais(idLote);
+        if (atuais.isEmpty()) {
+            System.out.println("(nenhum proprietário atual definido)");
         } else {
-            props.sort(Comparator.comparingInt(PropriedadeLote::getOrdemProprietario));
-            for (PropriedadeLote p : props) {
+            for (ParticipacaoLote p : atuais) {
                 Proprietario dono = proprietarios.get(p.getIdProprietario());
-                String fim = (p.getDataFim() == null) ? "ATUAL" : p.getDataFim().toString();
-                System.out.println(" #" + p.getOrdemProprietario()
-                        + " -> " + dono
-                        + " | Início: " + p.getDataInicio()
-                        + " | Fim: " + fim);
+                System.out.println(" - " + dono + " | Créditos: " + p.getQuantidadeCreditos()
+                        + " | Início: " + p.getDataInicio());
             }
+            int soma = atuais.stream().mapToInt(ParticipacaoLote::getQuantidadeCreditos).sum();
+            System.out.println("Soma atual: " + soma + " (deve ser 1000)");
+        }
+
+        System.out.println("\n--- Histórico de participações ---");
+        List<ParticipacaoLote> hist = participacoesPorLote.get(idLote);
+        if (hist.isEmpty()) {
+            System.out.println("(sem histórico)");
+        } else {
+            hist.stream()
+                    .sorted(Comparator.comparing(ParticipacaoLote::getDataInicio))
+                    .forEach(p -> {
+                        Proprietario dono = proprietarios.get(p.getIdProprietario());
+                        String fim = (p.getDataFim() == null) ? "ATUAL" : p.getDataFim().toString();
+                        System.out.println(" - " + dono.getNome()
+                                + " | Créditos: " + p.getQuantidadeCreditos()
+                                + " | Início: " + p.getDataInicio()
+                                + " | Fim: " + fim);
+                    });
         }
 
         System.out.println("\n--- Transações (histórico de compra/venda) ---");
@@ -148,10 +217,12 @@ public final class SistemaCarbono {
             System.out.println("(nenhuma transação)");
         } else {
             for (TransacaoCompraVenda t : trans) {
-                Proprietario vend = proprietarios.get(t.getIdVendedor());
+                String vendedores = t.getIdsVendedores().stream()
+                        .map(id -> proprietarios.get(id).getNome())
+                        .collect(Collectors.joining(", "));
                 Proprietario comp = proprietarios.get(t.getIdComprador());
                 System.out.println(" - " + t.getDataTransacao()
-                        + " | Vendedor: " + vend.getNome()
+                        + " | Vendedores: " + vendedores
                         + " -> Comprador: " + comp.getNome()
                         + " | Valor: R$ " + t.getValor());
             }
@@ -170,11 +241,10 @@ public final class SistemaCarbono {
         return p;
     }
 
-    private PropriedadeLote getPropriedadeAtual(UUID idLote) {
-        return propriedadesPorLote.get(idLote).stream()
-                .filter(PropriedadeLote::isAtual)
-                .findFirst()
-                .orElse(null);
+    private List<ParticipacaoLote> getParticipacoesAtuais(UUID idLote) {
+        return participacoesPorLote.get(idLote).stream()
+                .filter(ParticipacaoLote::isAtual)
+                .toList();
     }
 
     public List<Proprietario> listarProprietarios() {
@@ -187,5 +257,10 @@ public final class SistemaCarbono {
         return lotes.values().stream()
                 .sorted(Comparator.comparing(LoteCreditoCarbono::getCodigoLote))
                 .toList();
+    }
+
+    public List<ParticipacaoLote> listarParticipacoesAtuais(UUID idLote) {
+        getLoteOrThrow(idLote);
+        return List.copyOf(getParticipacoesAtuais(idLote));
     }
 }

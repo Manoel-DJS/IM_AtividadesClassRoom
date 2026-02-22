@@ -4,9 +4,14 @@ import org.atividade.entities.*;
 import org.atividade.exceptions.RegraNegocioException;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Scanner;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.UUID;
+import java.util.Map;
 
 public class Main {
     public static void main(String[] args) {
@@ -33,15 +38,19 @@ public class Main {
         sistema.registrarArvore(lote.getId(), new ArvoreGeradoraCredito("Pau Brasil", -10.916220, -37.668320));
 
         // Primeiro proprietário (produção/entrada no sistema)
-        sistema.definirPrimeiroProprietario(lote.getId(), pf);
+        // Copropriedade simultânea (participação por quantidade): soma precisa ser 1000
+        Map<UUID, Integer> iniciais = new LinkedHashMap<>();
+        iniciais.put(pf.getId(), 600);
+        iniciais.put(pj.getId(), 400);
+        sistema.definirParticipacoesIniciais(lote.getId(), iniciais);
 
         // Vendas (histórico). Máximo 3 proprietários no histórico.
-        sistema.venderLote(lote.getId(), pf, pj, new BigDecimal("1500.00"));
-        sistema.venderLote(lote.getId(), pj, pf2, new BigDecimal("1700.50"));
+        sistema.venderLote(lote.getId(), List.of(pf.getId(), pj.getId()), pf2.getId(), new BigDecimal("1500.00"));
 
         // Tentativa de 3ª venda (viraria 4º dono) -> deve falhar
         try {
-            sistema.venderLote(lote.getId(), pf2, pf3, new BigDecimal("1800.00"));
+            // agora o proprietário atual é apenas pf2 (1000), então tentar vender com vendedores errados falha
+            sistema.venderLote(lote.getId(), List.of(pf3.getId()), pf.getId(), new BigDecimal("1800.00"));
         } catch (RegraNegocioException ex) {
             System.out.println("\n[ERRO ESPERADO] " + ex.getMessage());
         }
@@ -69,7 +78,7 @@ public class Main {
                     case 4 -> criarLote(sc, sistema);
                     case 5 -> listarLotes(sistema);
                     case 6 -> registrarArvore(sc, sistema);
-                    case 7 -> definirPrimeiroProprietario(sc, sistema);
+                    case 7 -> definirParticipacoesIniciais(sc, sistema);
                     case 8 -> venderLote(sc, sistema);
                     case 9 -> imprimirRelatorio(sc, sistema);
                     case 0 -> {
@@ -101,8 +110,8 @@ public class Main {
         System.out.println("4) Criar lote (1000 créditos)");
         System.out.println("5) Listar lotes");
         System.out.println("6) Registrar árvore em lote");
-        System.out.println("7) Definir primeiro proprietário do lote");
-        System.out.println("8) Vender lote");
+        System.out.println("7) Definir proprietários iniciais do lote (1..3, soma=1000)");
+        System.out.println("8) Vender lote (vendedores = proprietários atuais)");
         System.out.println("9) Imprimir relatório do lote");
         System.out.println("0) Sair");
         System.out.println("----------------------------");
@@ -180,31 +189,93 @@ public class Main {
         System.out.println("Árvore registrada no lote.");
     }
 
-    private static void definirPrimeiroProprietario(Scanner sc, SistemaCarbono sistema) {
-        System.out.println("=== DEFINIR PRIMEIRO PROPRIETÁRIO ===");
-
+    private static void definirParticipacoesIniciais(Scanner sc, SistemaCarbono sistema) {
+        System.out.println("=== DEFINIR PROPRIETÁRIOS INICIAIS (COPROPRIEDADE) ===");
         UUID idLote = escolherLote(sc, sistema);
-        Proprietario p = escolherProprietario(sc, sistema);
 
-        sistema.definirPrimeiroProprietario(idLote, p);
-        System.out.println("Primeiro proprietário definido com sucesso.");
+        int n = lerInt(sc, "Quantos proprietários simultâneos? (1 a 3): ");
+        if (n < 1 || n > 3) {
+            throw new RegraNegocioException("Quantidade inválida. Use 1..3.");
+        }
+
+        Map<UUID, Integer> map = new LinkedHashMap<>();
+        int restante = 1000;
+
+        for (int i = 1; i <= n; i++) {
+            System.out.println("\nProprietário " + i + " de " + n + ":");
+            Proprietario p = escolherProprietario(sc, sistema);
+
+            if (map.containsKey(p.getId())) {
+                throw new RegraNegocioException("Proprietário repetido não é permitido.");
+            }
+
+            int qtd;
+            if (i < n) {
+                qtd = lerInt(sc, "Créditos deste proprietário (restante=" + restante + "): ");
+                if (qtd <= 0) throw new RegraNegocioException("Créditos deve ser > 0.");
+                if (qtd >= restante) throw new RegraNegocioException("Créditos inválidos. Deve sobrar para os próximos.");
+                restante -= qtd;
+            } else {
+                qtd = restante;
+                System.out.println("Último proprietário recebe automaticamente o restante: " + qtd);
+            }
+
+            map.put(p.getId(), qtd);
+        }
+
+        sistema.definirParticipacoesIniciais(idLote, map);
+        System.out.println("Participações iniciais definidas com sucesso (soma=1000).");
     }
 
     private static void venderLote(Scanner sc, SistemaCarbono sistema) {
-        System.out.println("=== VENDER LOTE ===");
+        System.out.println("=== VENDER LOTE (LOTE INTEIRO 1000) ===");
 
         UUID idLote = escolherLote(sc, sistema);
 
-        System.out.println("Selecione o VENDEDOR (deve ser o proprietário atual):");
-        Proprietario vendedor = escolherProprietario(sc, sistema);
+        // proprietários atuais e créditos
+        List<ParticipacaoLote> atuais = sistema.listarParticipacoesAtuais(idLote);
+        if (atuais.isEmpty()) {
+            throw new RegraNegocioException("Lote sem proprietários atuais definidos.");
+        }
 
-        System.out.println("Selecione o COMPRADOR:");
+        System.out.println("Proprietários atuais (devem ser TODOS os vendedores):");
+        for (ParticipacaoLote p : atuais) {
+            System.out.println(" - ID Proprietário: " + p.getIdProprietario() + " | Créditos: " + p.getQuantidadeCreditos());
+        }
+
+        List<UUID> idsVendedores = new ArrayList<>();
+        Set<UUID> selecionados = new HashSet<>();
+
+        System.out.println("\nSelecione exatamente TODOS os vendedores (os proprietários atuais). ");
+        System.out.println("Digite o número do proprietário. Digite 0 para finalizar seleção.");
+
+        while (true) {
+            int x = lerInt(sc, "Número do proprietário (0=finalizar): ");
+            if (x == 0) break;
+
+            Proprietario p = escolherProprietarioPorNumero(sistema, x);
+            if (selecionados.add(p.getId())) {
+                idsVendedores.add(p.getId());
+                System.out.println("Adicionado vendedor: " + p.getNome());
+            } else {
+                System.out.println("Já selecionado.");
+            }
+        }
+
+        System.out.println("\nSelecione o COMPRADOR:");
         Proprietario comprador = escolherProprietario(sc, sistema);
 
         BigDecimal valor = lerBigDecimal(sc, "Valor da transação (ex: 1500.00): ");
 
-        sistema.venderLote(idLote, vendedor, comprador, valor);
+        sistema.venderLote(idLote, idsVendedores, comprador.getId(), valor);
         System.out.println("Venda registrada com sucesso.");
+    }
+
+    private static Proprietario escolherProprietarioPorNumero(SistemaCarbono sistema, int numero) {
+        List<Proprietario> props = sistema.listarProprietarios();
+        int idx = numero - 1;
+        if (idx < 0 || idx >= props.size()) throw new RegraNegocioException("Proprietário inválido.");
+        return props.get(idx);
     }
 
     private static void imprimirRelatorio(Scanner sc, SistemaCarbono sistema) {
